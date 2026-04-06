@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gram-pino"
+version = "0.1.0"
+description = "Phase A data foundation for GRaM-PINO experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "pandas>=2.1",
+  "matplotlib>=3.8",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  "jupyter>=1.0",
+]
+
+[project.optional-dependencies]
+training = [
+  "torch>=2.2",
+  "torch-geometric>=2.5",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+include = ["src*"]

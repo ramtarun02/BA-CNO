@@ -1,0 +1,49 @@
+Metadata-Version: 2.4
+Name: gram-pino
+Version: 0.1.0
+Summary: Phase A data foundation for GRaM-PINO experiments
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.11
+Requires-Dist: pandas>=2.1
+Requires-Dist: matplotlib>=3.8
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: tqdm>=4.66
+Requires-Dist: jupyter>=1.0
+Provides-Extra: training
+Requires-Dist: torch>=2.2; extra == "training"
+Requires-Dist: torch-geometric>=2.5; extra == "training"
+
+# GRaM-PINO
+
+Boundary-aware point-cloud operator experiments for transient airfoil flow prediction.
+
+## Phase A status
+
+This repository now includes the initial data foundation for the experiment plan:
+
+- project scaffold under `src/`, `configs/`, `notebooks/`, and `outputs/`
+- dataset indexing and loading for `warped-ifw/*.npz`
+- geometry-aware train/validation splits by full simulation ID
+- preprocessing utilities for normalization, boundary distance, and debug subsampling
+- a starter notebook for data exploration
+
+## Quick start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+python -m src.datasets.gram_dataset --data-root warped-ifw --limit 3
+```
+
+## Data assumptions
+
+Each `.npz` sample is expected to contain:
+
+- `pos`: `(N, 3)` point coordinates
+- `idcs_airfoil`: airfoil point indices
+- `velocity_in`: `(5, N, 3)` past velocity frames
+- `velocity_out`: `(5, N, 3)` target future velocity frames
+- `pressure`: optional `(10, N)` pressure field

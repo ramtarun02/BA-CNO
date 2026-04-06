@@ -1,0 +1,23 @@
+data:
+  root: warped-ifw
+  include_pressure: true
+
+split:
+  seed: 42
+  val_fraction: 0.2
+
+preprocessing:
+  coordinate_mode: center_scale
+  compute_boundary_distance: true
+  subsample_points: 4096
+  keep_airfoil: true
+
+outputs:
+  split_manifest: outputs/exploration/geometry_split.json
+  velocity_stats: outputs/exploration/velocity_stats.json
+  figures_dir: outputs/exploration
+
+training_stub:
+  batch_size: 1
+  epochs: 1
+  loss: huber
