@@ -5,6 +5,8 @@ data:
 split:
   seed: 42
   val_fraction: 0.2
+  num_test_simulations: 2
+  test_simulation_ids: [1026, 3006]
 
 preprocessing:
   coordinate_mode: center_scale

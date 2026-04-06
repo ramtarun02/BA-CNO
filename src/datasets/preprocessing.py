@@ -129,7 +129,7 @@ def deterministic_subsample_indices(
     seed: int = 0,
     priority_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Pick a reproducible subset of points and keep airfoil points when possible."""
+    """Pick a reproducible subset while preserving both boundary and fluid coverage."""
 
     if target_points >= num_points:
         return np.arange(num_points, dtype=np.int64)
@@ -140,16 +140,34 @@ def deterministic_subsample_indices(
         indices = rng.choice(num_points, size=target_points, replace=False)
         return np.sort(indices.astype(np.int64))
 
+    priority_mask = np.asarray(priority_mask, dtype=bool)
     priority_indices = np.flatnonzero(priority_mask)
     other_indices = np.flatnonzero(~priority_mask)
 
-    if len(priority_indices) >= target_points:
+    if priority_indices.size == 0:
+        indices = rng.choice(num_points, size=target_points, replace=False)
+        return np.sort(indices.astype(np.int64))
+
+    if other_indices.size == 0:
         chosen = rng.choice(priority_indices, size=target_points, replace=False)
         return np.sort(chosen.astype(np.int64))
 
-    remaining = target_points - len(priority_indices)
-    sampled_other = rng.choice(other_indices, size=remaining, replace=False)
-    merged = np.concatenate([priority_indices, sampled_other])
+    observed_ratio = priority_indices.size / num_points
+    target_priority = int(round(target_points * observed_ratio))
+
+    min_priority = min(priority_indices.size, max(64, target_points // 8))
+    max_priority = min(priority_indices.size, max(min_priority, int(target_points * 0.5)))
+    target_priority = int(np.clip(target_priority, min_priority, max_priority))
+    target_priority = min(target_priority, target_points - 1)
+
+    target_other = target_points - target_priority
+    if target_other > other_indices.size:
+        target_other = other_indices.size
+        target_priority = target_points - target_other
+
+    sampled_priority = rng.choice(priority_indices, size=target_priority, replace=False)
+    sampled_other = rng.choice(other_indices, size=target_other, replace=False)
+    merged = np.concatenate([sampled_priority, sampled_other])
     return np.sort(merged.astype(np.int64))
 
 

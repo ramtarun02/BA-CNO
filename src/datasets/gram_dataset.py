@@ -213,5 +213,5 @@ def main() -> None:
     print(json.dumps(payload, indent=args.indent))
 
 
-if __name__ == "__main__":
+if __name__ == "_python -m src.train.train --config configs/phase_a.yaml_main__":
     main()

@@ -18,3 +18,4 @@ jupyter>=1.0
 jupyterlab>=4.0
 notebook>=7.0
 ipykernel>=6.29
+plotly>=6.0

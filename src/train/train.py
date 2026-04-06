@@ -28,6 +28,8 @@ def main() -> None:
         records,
         val_fraction=float(config["split"]["val_fraction"]),
         seed=int(config["split"]["seed"]),
+        num_test_simulations=int(config["split"].get("num_test_simulations", 0)),
+        test_simulation_ids=config["split"].get("test_simulation_ids"),
     )
 
     split_output = config["outputs"]["split_manifest"]
