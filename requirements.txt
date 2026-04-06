@@ -1,0 +1,20 @@
+# GRaM-PINO dependencies
+# Install with: pip install -r requirements.txt
+
+# Core scientific stack
+numpy>=1.26
+scipy>=1.11
+pandas>=2.1
+matplotlib>=3.8
+pyyaml>=6.0
+tqdm>=4.66
+
+# Deep learning / graph learning
+torch>=2.2
+torch-geometric>=2.5
+
+# Notebook IDE / interactive workflow
+jupyter>=1.0
+jupyterlab>=4.0
+notebook>=7.0
+ipykernel>=6.29
