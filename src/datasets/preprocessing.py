@@ -207,6 +207,7 @@ def subsample_sample(
     metadata = dict(sample.get("metadata", {}))
     metadata["num_points_before_subsample"] = int(num_points)
     metadata["num_points"] = int(indices.shape[0])
+    metadata["num_airfoil_points"] = int(new_sample["airfoil_mask"].sum())
     metadata["subsample_seed"] = seed
     new_sample["metadata"] = metadata
     new_sample["subsample_indices"] = indices

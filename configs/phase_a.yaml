@@ -23,3 +23,18 @@ training_stub:
   batch_size: 1
   epochs: 1
   loss: huber
+
+baseline_gnn:
+  output_dir: outputs/baseline_gnn
+  hidden_dim: 64
+  num_layers: 3
+  k_neighbors: 8
+  output_steps: 5
+  predict_pressure: true
+  learning_rate: 0.001
+  weight_decay: 1.0e-5
+  epochs: 4
+  train_limit: 12
+  val_limit: 4
+  subsample_points: 1024
+  pressure_loss_weight: 0.001
