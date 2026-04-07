@@ -21,21 +21,39 @@ class PointEncoder(nn.Module):
         return self.net(x)
 
 
+def _compute_knn_single(pos: torch.Tensor, k: int, chunk_size: int | None = None) -> torch.Tensor:
+    """Compute k-NN indices for one point cloud without materializing the full NxN matrix."""
+
+    num_points = pos.shape[0]
+    k = max(1, min(int(k), num_points - 1))
+
+    if chunk_size is None:
+        max_pairwise_entries = 4_000_000
+        chunk_size = max(1, min(num_points, max_pairwise_entries // max(num_points, 1)))
+
+    neighbour_chunks = []
+    for start in range(0, num_points, chunk_size):
+        stop = min(start + chunk_size, num_points)
+        dist = torch.cdist(pos[start:stop], pos)
+        row_idx = torch.arange(stop - start, device=pos.device)
+        self_idx = torch.arange(start, stop, device=pos.device)
+        dist[row_idx, self_idx] = float("inf")
+        neighbour_chunks.append(dist.topk(k, dim=-1, largest=False).indices)
+
+    return torch.cat(neighbour_chunks, dim=0)
+
+
 def compute_knn(pos: torch.Tensor, k: int) -> torch.Tensor:
     """Compute batched k-NN indices from positions shaped ``(B, N, 3)``."""
 
     if pos.dim() != 3:
         raise ValueError(f"Expected pos with shape (B, N, 3), got {tuple(pos.shape)}")
 
-    batch_size, num_points, _ = pos.shape
+    _, num_points, _ = pos.shape
     if num_points < 2:
         raise ValueError("At least two points are required to build a graph.")
 
-    k = max(1, min(int(k), num_points - 1))
-    dist = torch.cdist(pos, pos)
-    eye = torch.eye(num_points, device=pos.device, dtype=torch.bool).unsqueeze(0)
-    dist = dist.masked_fill(eye, float("inf"))
-    return dist.topk(k, dim=-1, largest=False).indices
+    return torch.stack([_compute_knn_single(batch_pos, k) for batch_pos in pos], dim=0)
 
 
 class ResidualBlock(nn.Module):

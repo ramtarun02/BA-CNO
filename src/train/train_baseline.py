@@ -197,6 +197,24 @@ def main() -> None:
         keep_airfoil=bool(config["preprocessing"].get("keep_airfoil", True)),
     )
 
+    print(
+        json.dumps(
+            {
+                "status": "initializing_baseline_gnn",
+                "device": str(device),
+                "subsample_points": subsample_points,
+                "train_records": len(split["train_records"]),
+                "val_records": len(split["val_records"]),
+            }
+        ),
+        flush=True,
+    )
+    if device.type == "cpu" and subsample_points > 4096:
+        print(
+            f"Warning: subsample_points={subsample_points} on CPU can be slow; consider 2048-4096 for smoke runs.",
+            flush=True,
+        )
+
     train_dataset = GRAMDataset(
         data_root,
         records=split["train_records"],
@@ -239,6 +257,7 @@ def main() -> None:
     best_epoch = 0
 
     for epoch in range(1, epochs + 1):
+        print(f"Starting epoch {epoch}/{epochs}...", flush=True)
         train_metrics = _iterate_epoch(
             model,
             train_dataset,
@@ -270,7 +289,7 @@ def main() -> None:
             "val_velocity_rmse": val_metrics["velocity_rmse"],
         }
         history.append(record)
-        print(json.dumps(record))
+        print(json.dumps(record), flush=True)
 
         if val_metrics["loss"] < best_val_loss:
             best_val_loss = val_metrics["loss"]
@@ -313,7 +332,7 @@ def main() -> None:
     model.eval()
     _save_example_prediction(model, val_dataset, output_dir / "val_prediction_example.npz", device)
 
-    print(json.dumps(summary, indent=2))
+    print(json.dumps(summary, indent=2), flush=True)
 
 
 if __name__ == "__main__":
