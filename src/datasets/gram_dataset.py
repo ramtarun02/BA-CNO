@@ -69,7 +69,7 @@ def scan_dataset_files(data_root: str | Path) -> list[SampleRecord]:
     if not root.exists():
         raise FileNotFoundError(f"Dataset directory does not exist: {root}")
 
-    files = sorted(root.glob("*.npz"))
+    files = sorted(f for f in root.glob("*.npz") if not f.name.startswith("."))
     if not files:
         raise FileNotFoundError(f"No `.npz` files found under: {root}")
 

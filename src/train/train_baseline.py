@@ -12,7 +12,12 @@ import torch.nn as nn
 import yaml
 
 from src.datasets.gram_dataset import GRAMDataset, scan_dataset_files
-from src.datasets.preprocessing import PhaseAPreprocessor, load_velocity_stats
+from src.datasets.preprocessing import (
+    PhaseAPreprocessor,
+    fit_velocity_stats,
+    load_velocity_stats,
+    save_velocity_stats,
+)
 from src.datasets.splits import build_geometry_split, summarize_split
 from src.models import BaselineGNN
 
@@ -180,7 +185,20 @@ def main() -> None:
         test_simulation_ids=config["split"].get("test_simulation_ids"),
     )
 
-    velocity_stats = load_velocity_stats(config["outputs"]["velocity_stats"])
+    stats_path = Path(config["outputs"]["velocity_stats"])
+    if not stats_path.exists():
+        print("velocity_stats.json not found — computing from training split...", flush=True)
+        raw_train = GRAMDataset(
+            data_root,
+            records=split["train_records"],
+            transform=None,
+            include_pressure=False,
+        )
+        velocity_stats = fit_velocity_stats(raw_train)
+        save_velocity_stats(velocity_stats, stats_path)
+        print(f"Saved velocity stats to {stats_path}", flush=True)
+    else:
+        velocity_stats = load_velocity_stats(stats_path)
     subsample_points = int(
         args.subsample_points
         or train_cfg.get("subsample_points")
