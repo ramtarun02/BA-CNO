@@ -26,9 +26,16 @@ training_stub:
 
 baseline_gnn:
   output_dir: outputs/baseline_gnn
+  graph_cache_dir: outputs/baseline_gnn/graph_cache
+  device: mps
   hidden_dim: 64
   num_layers: 3
+  num_hops: 3
   k_neighbors: 8
+  node_batch_size: 4096
+  eval_node_batch_size: 8192
+  undirected_graph: false
+  dropout: 0.1
   output_steps: 5
   predict_pressure: true
   learning_rate: 0.001
@@ -36,5 +43,5 @@ baseline_gnn:
   epochs: 100
   train_limit: 12
   val_limit: 4
-  subsample_points: 4096
-  pressure_loss_weight: 0.001
+  subsample_points: 0
+  pressure_loss_weight: 0.1

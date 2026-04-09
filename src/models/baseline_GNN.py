@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.nn import SAGEConv
 
 
 class PointEncoder(nn.Module):
@@ -56,78 +57,54 @@ def compute_knn(pos: torch.Tensor, k: int) -> torch.Tensor:
     return torch.stack([_compute_knn_single(batch_pos, k) for batch_pos in pos], dim=0)
 
 
+def knn_to_edge_index(neighbour_idx: torch.Tensor) -> torch.Tensor:
+    """Convert batched neighbour indices shaped ``(B, N, K)`` into ``edge_index``."""
+
+    if neighbour_idx.dim() == 2:
+        neighbour_idx = neighbour_idx.unsqueeze(0)
+    if neighbour_idx.dim() != 3:
+        raise ValueError(f"Expected neighbour_idx with shape (B, N, K), got {tuple(neighbour_idx.shape)}")
+
+    batch_size, num_nodes, k = neighbour_idx.shape
+    offsets = torch.arange(batch_size, device=neighbour_idx.device).view(batch_size, 1, 1) * num_nodes
+    source = torch.arange(num_nodes, device=neighbour_idx.device).view(1, num_nodes, 1).expand(batch_size, -1, k)
+
+    source = (source + offsets).reshape(-1)
+    target = (neighbour_idx + offsets).reshape(-1)
+    edge_index = torch.stack([source, target], dim=0)
+    return torch.cat([edge_index, edge_index.flip(0)], dim=1)
+
+
 class ResidualBlock(nn.Module):
-    """Simple residual message-passing block for a baseline geometric GNN."""
+    """Residual GraphSAGE block optimized for sparse point-cloud graphs."""
 
-    def __init__(self, hidden_dim: int) -> None:
+    def __init__(self, hidden_dim: int, dropout: float = 0.0) -> None:
         super().__init__()
-        self.message_mlp = nn.Sequential(
-            nn.Linear(2 * hidden_dim + 3, hidden_dim),
+        self.conv = SAGEConv(hidden_dim, hidden_dim, aggr="mean", normalize=True)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, 2 * hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.update_mlp = nn.Sequential(
+            nn.Dropout(dropout),
             nn.Linear(2 * hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
         )
-        self.norm = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.dropout = float(dropout)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        pos: torch.Tensor,
-        neighbour_idx: torch.Tensor,
-    ) -> torch.Tensor:
-        batch_size, _, hidden_dim = x.shape
-        k = neighbour_idx.shape[-1]
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        h = self.conv(x, edge_index)
+        h = F.relu(h)
+        h = F.dropout(h, p=self.dropout, training=self.training)
+        x = self.norm1(x + h)
 
-        idx_features = neighbour_idx.unsqueeze(-1).expand(batch_size, -1, -1, hidden_dim)
-        gathered_x = torch.gather(
-            x.unsqueeze(1).expand(-1, x.shape[1], -1, -1),
-            2,
-            idx_features,
-        )
-
-        idx_pos = neighbour_idx.unsqueeze(-1).expand(batch_size, -1, -1, pos.shape[-1])
-        gathered_pos = torch.gather(
-            pos.unsqueeze(1).expand(-1, pos.shape[1], -1, -1),
-            2,
-            idx_pos,
-        )
-
-        center_x = x.unsqueeze(2).expand(-1, -1, k, -1)
-        center_pos = pos.unsqueeze(2).expand(-1, -1, k, -1)
-        relative_pos = gathered_pos - center_pos
-
-        msg_input = torch.cat([center_x, gathered_x, relative_pos], dim=-1)
-        messages = self.message_mlp(msg_input)
-        aggregated = messages.mean(dim=2)
-
-        delta = self.update_mlp(torch.cat([x, aggregated], dim=-1))
-        out = self.norm(x + delta)
-        return F.relu(out)
+        h = self.ffn(x)
+        h = F.dropout(h, p=self.dropout, training=self.training)
+        x = self.norm2(x + h)
+        return F.relu(x)
 
 
 class BaselineGNN(nn.Module):
-    """Baseline k-NN graph network for 5-step flow prediction.
-
-    Parameters
-    ----------
-    in_dim:
-        Per-point input feature dimension.
-    hidden_dim:
-        Width of the latent node embedding.
-    num_layers:
-        Number of residual graph blocks.
-    k_neighbors:
-        Number of nearest neighbours used for message passing.
-    output_steps:
-        Number of future frames to predict.
-    predict_pressure:
-        If ``True``, also predict one scalar pressure value per future frame.
-    """
+    """Sparse GraphSAGE baseline for node-wise multi-step CFD prediction."""
 
     def __init__(
         self,
@@ -137,6 +114,7 @@ class BaselineGNN(nn.Module):
         k_neighbors: int = 12,
         output_steps: int = 5,
         predict_pressure: bool = True,
+        dropout: float = 0.1,
     ) -> None:
         super().__init__()
         self.in_dim = int(in_dim)
@@ -145,44 +123,71 @@ class BaselineGNN(nn.Module):
         self.k_neighbors = int(k_neighbors)
         self.output_steps = int(output_steps)
         self.predict_pressure = bool(predict_pressure)
+        self.dropout = float(dropout)
 
         self.encoder = PointEncoder(self.in_dim, self.hidden_dim)
-        self.blocks = nn.ModuleList([ResidualBlock(self.hidden_dim) for _ in range(self.num_layers)])
+        self.blocks = nn.ModuleList(
+            [ResidualBlock(self.hidden_dim, dropout=self.dropout) for _ in range(self.num_layers)]
+        )
 
         output_channels = 3 + (1 if self.predict_pressure else 0)
         self.decoder = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ReLU(),
+            nn.Dropout(self.dropout),
             nn.Linear(self.hidden_dim, self.output_steps * output_channels),
         )
 
-    def forward(self, input_features: torch.Tensor, pos: torch.Tensor) -> dict[str, torch.Tensor]:
-        if input_features.dim() == 2:
-            input_features = input_features.unsqueeze(0)
-        if pos.dim() == 2:
-            pos = pos.unsqueeze(0)
+    def forward(
+        self,
+        input_features: torch.Tensor,
+        pos: torch.Tensor | None = None,
+        edge_index: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        if input_features.dim() == 3:
+            if input_features.shape[0] != 1:
+                raise ValueError(
+                    "Dense batched inputs are only supported for batch size 1. "
+                    f"Got shape {tuple(input_features.shape)}"
+                )
+            input_features = input_features[0]
+            if pos is not None and pos.dim() == 3:
+                pos = pos[0]
 
-        if input_features.shape[:2] != pos.shape[:2]:
-            raise ValueError(
-                "input_features and pos must agree on batch and node dimensions: "
-                f"got {tuple(input_features.shape)} vs {tuple(pos.shape)}"
-            )
+        if edge_index is None:
+            if pos is None:
+                raise ValueError("Either `edge_index` or `pos` must be provided.")
 
-        neighbour_idx = compute_knn(pos, self.k_neighbors)
+            with torch.no_grad():
+                knn_pos = pos.detach()
+                if knn_pos.dim() == 2:
+                    knn_pos = knn_pos.unsqueeze(0)
+                use_cpu_knn = knn_pos.device.type == "mps" and knn_pos.shape[1] >= 8192
+                if use_cpu_knn:
+                    neighbour_idx = compute_knn(knn_pos.cpu(), self.k_neighbors).to(knn_pos.device)
+                else:
+                    neighbour_idx = compute_knn(knn_pos, self.k_neighbors)
+                edge_index = knn_to_edge_index(neighbour_idx)
+
+            if input_features.dim() == 3:
+                input_features = input_features.reshape(-1, input_features.shape[-1])
+        elif edge_index.dim() != 2:
+            raise ValueError(f"Expected edge_index with shape (2, E), got {tuple(edge_index.shape)}")
+
         x = self.encoder(input_features)
         for block in self.blocks:
-            x = block(x, pos, neighbour_idx)
+            x = block(x, edge_index)
 
         decoded = self.decoder(x)
-        batch_size, num_points, _ = decoded.shape
+        num_nodes = decoded.shape[0]
 
         if self.predict_pressure:
-            decoded = decoded.view(batch_size, num_points, self.output_steps, 4)
-            velocity = decoded[..., :3].permute(0, 2, 1, 3).contiguous()
-            pressure = decoded[..., 3].permute(0, 2, 1).contiguous()
-            return {"velocity": velocity, "pressure": pressure}
+            decoded = decoded.view(num_nodes, self.output_steps, 4)
+            return {
+                "velocity": decoded[..., :3].contiguous(),
+                "pressure": decoded[..., 3].contiguous(),
+            }
 
-        velocity = decoded.view(batch_size, num_points, self.output_steps, 3)
-        velocity = velocity.permute(0, 2, 1, 3).contiguous()
-        return {"velocity": velocity}
+        velocity = decoded.view(num_nodes, self.output_steps, 3)
+        return {"velocity": velocity.contiguous()}
 
