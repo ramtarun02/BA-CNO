@@ -3,30 +3,27 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gram-pino"
-version = "0.1.0"
-description = "Phase A data foundation for GRaM-PINO experiments"
+name = "ba-cno"
+version = "0.2.0"
+description = "Boundary-Aware Conservative Neural Operator: finite-volume-style graph surrogates benchmarked on CylinderFlow and AirfRANS"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.26",
   "scipy>=1.11",
-  "pandas>=2.1",
   "matplotlib>=3.8",
   "pyyaml>=6.0",
   "tqdm>=4.66",
-  "jupyter>=1.0",
-  "plotly>=6.0",
+  "torch>=2.2",
 ]
 
 [project.optional-dependencies]
-training = [
-  "torch>=2.2",
-  "torch-geometric>=2.5",
-]
-
-[tool.setuptools]
-package-dir = {"" = "."}
+dev = ["pytest>=8"]
+airfrans = ["airfrans>=0.1.5", "pyvista>=0.43"]
+gram = ["torch-geometric>=2.5", "pandas>=2.1", "plotly>=6.0", "jupyter>=1.0"]
 
 [tool.setuptools.packages.find]
-include = ["src*"]
+include = ["ba_cno*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

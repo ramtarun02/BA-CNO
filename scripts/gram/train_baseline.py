@@ -17,7 +17,7 @@ from ba_cno.data.gram.graph_dataset import GRAMGraphDataset
 from ba_cno.data.gram.gram_dataset import scan_dataset_files
 from ba_cno.data.gram.preprocessing import PhaseAPreprocessor, load_velocity_stats
 from ba_cno.data.gram.splits import build_geometry_split, summarize_split
-from ba_cno.models import BaselineGNN
+from ba_cno.models.graphsage import BaselineGNN
 
 
 def _build_argparser() -> argparse.ArgumentParser:

@@ -1,0 +1,25 @@
+# CylinderFlow - Ablation: ordinary messages + conservative decoder only
+output_dir: outputs/cylinder/ba_cno_none_fluxdec
+data:
+  root: data/cylinder_flow
+  max_trajectories: null      # null = all 1000; use e.g. 50 on a Mac
+  noise_std: 0.02             # MeshGraphNets setting
+model:
+  name: ba_cno
+  latent: 128
+  num_layers: 15
+  flux_mode: none
+  decoder: flux_divergence
+  conserved_dim: 2
+train:
+  device: auto
+  seed: 0
+  batch_size: 2
+  lr: 1.0e-4
+  lr_min: 1.0e-6
+  max_steps: 300000           # equal budget for every model (paper used ~10M)
+  log_every: 200
+  ckpt_every: 2000
+  norm_samples: 200
+  pressure_loss_weight: 0.0   # velocity-only, as in the MeshGraphNets code
+  flux_penalty_weight: 0.0

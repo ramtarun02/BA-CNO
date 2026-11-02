@@ -1,21 +1,18 @@
-# GRaM-PINO dependencies
-# Install with: pip install -r requirements.txt
-
-# Core scientific stack
+# BA-CNO dependencies. Prefer: pip install -e ".[dev]"
 numpy>=1.26
 scipy>=1.11
-pandas>=2.1
 matplotlib>=3.8
 pyyaml>=6.0
 tqdm>=4.66
-
-# Deep learning / graph learning
 torch>=2.2
-torch-geometric>=2.5
+pytest>=8
 
-# Notebook IDE / interactive workflow
-jupyter>=1.0
-jupyterlab>=4.0
-notebook>=7.0
-ipykernel>=6.29
+# AirfRANS benchmark (week 2)
+airfrans>=0.1.5
+pyvista>=0.43
+
+# Legacy GRaM challenge code
+torch-geometric>=2.5
+pandas>=2.1
 plotly>=6.0
+jupyter>=1.0
