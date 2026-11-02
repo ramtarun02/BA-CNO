@@ -342,6 +342,7 @@ def main() -> None:
         seed=seed,
         compute_boundary=bool(config["preprocessing"].get("compute_boundary_distance", True)),
         keep_airfoil=bool(config["preprocessing"].get("keep_airfoil", True)),
+        include_pressure=bool(config["data"].get("include_pressure", False)),
     )
 
     k_neighbors = int(train_cfg.get("k_neighbors", 8))

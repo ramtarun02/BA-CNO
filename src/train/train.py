@@ -46,6 +46,7 @@ def main() -> None:
         subsample_points=int(config["preprocessing"]["subsample_points"]),
         seed=int(config["split"]["seed"]),
         compute_boundary=bool(config["preprocessing"]["compute_boundary_distance"]),
+        include_pressure=bool(config["data"].get("include_pressure", False)),
     )
 
     example = preprocessor(train_dataset[0])

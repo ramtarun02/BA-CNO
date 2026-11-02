@@ -250,6 +250,7 @@ class PhaseAPreprocessor:
     seed: int = 0
     compute_boundary: bool = True
     keep_airfoil: bool = True
+    include_pressure: bool = False
 
     def __call__(self, sample: dict[str, Any]) -> dict[str, Any]:
         processed = dict(sample)
@@ -291,7 +292,10 @@ class PhaseAPreprocessor:
                 "std": np.asarray(self.velocity_std, dtype=np.float32),
             }
 
-        processed["input_features"] = build_input_features(processed)
+        processed["input_features"] = build_input_features(
+            processed,
+            include_pressure=self.include_pressure,
+        )
         return processed
 
     def fit(self, samples: Iterable[dict[str, Any]], include_targets: bool = True) -> "PhaseAPreprocessor":

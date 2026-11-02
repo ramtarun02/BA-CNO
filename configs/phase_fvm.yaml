@@ -1,0 +1,46 @@
+data:
+  root: warped-ifw
+  include_pressure: true
+
+split:
+  seed: 42
+  val_fraction: 0.2
+  num_test_simulations: 2
+  test_simulation_ids: [1026, 3006]
+
+preprocessing:
+  coordinate_mode: center_scale
+  compute_boundary_distance: true
+  subsample_points: 6144
+  keep_airfoil: true
+
+outputs:
+  split_manifest: outputs/exploration/geometry_split.json
+  velocity_stats: outputs/exploration/velocity_stats.json
+  figures_dir: outputs/exploration
+
+fvm_operator:
+  output_dir: outputs/fvm_operator
+  graph_cache_dir: outputs/fvm_operator/graph_cache
+  device: cpu
+  hidden_dim: 64
+  edge_hidden_dim: 64
+  num_layers: 3
+  num_hops: 2
+  k_neighbors: 6
+  node_batch_size: 3072
+  eval_node_batch_size: 6144
+  undirected_graph: true
+  dropout: 0.1
+  output_steps: 5
+  learning_rate: 0.001
+  weight_decay: 1.0e-5
+  epochs: 50
+  train_limit: 16
+  val_limit: 4
+  subsample_points: 8192
+  loss_type: huber
+  loss_delta: 1.0
+  boundary_loss_weight: 0.1
+  flux_loss_weight: 0.02
+  late_horizon_bonus: 0.4
