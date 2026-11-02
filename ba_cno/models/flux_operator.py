@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .baseline_GNN import PointEncoder, compute_knn, knn_to_edge_index
+from .graphsage import PointEncoder, compute_knn, knn_to_edge_index
 
 
 def _build_node_boundary_features(

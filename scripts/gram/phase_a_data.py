@@ -6,14 +6,14 @@ from pathlib import Path
 
 import yaml
 
-from src.datasets.gram_dataset import GRAMDataset, scan_dataset_files
-from src.datasets.preprocessing import PhaseAPreprocessor, fit_velocity_stats, save_velocity_stats
-from src.datasets.splits import build_geometry_split, save_split_manifest, summarize_split
+from ba_cno.data.gram.gram_dataset import GRAMDataset, scan_dataset_files
+from ba_cno.data.gram.preprocessing import PhaseAPreprocessor, fit_velocity_stats, save_velocity_stats
+from ba_cno.data.gram.splits import build_geometry_split, save_split_manifest, summarize_split
 
 
 def _build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Phase A data smoke runner.")
-    parser.add_argument("--config", type=str, default="configs/phase_a.yaml")
+    parser.add_argument("--config", type=str, default="configs/gram/phase_a.yaml")
     return parser
 
 

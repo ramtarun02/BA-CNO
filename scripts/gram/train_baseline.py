@@ -8,21 +8,21 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn as nn
 import yaml
 from torch_geometric.data import Data
 from torch_geometric.utils import k_hop_subgraph
 
-from src.datasets.graph_dataset import GRAMGraphDataset
-from src.datasets.gram_dataset import scan_dataset_files
-from src.datasets.preprocessing import PhaseAPreprocessor, load_velocity_stats
-from src.datasets.splits import build_geometry_split, summarize_split
-from src.losses import FVMCompositeLoss
-from src.models import FVMNeuralOperator
+from ba_cno.data.gram.graph_dataset import GRAMGraphDataset
+from ba_cno.data.gram.gram_dataset import scan_dataset_files
+from ba_cno.data.gram.preprocessing import PhaseAPreprocessor, load_velocity_stats
+from ba_cno.data.gram.splits import build_geometry_split, summarize_split
+from ba_cno.models import BaselineGNN
 
 
 def _build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train the FVM neural operator on GRaM samples.")
-    parser.add_argument("--config", type=str, default="configs/phase_fvm.yaml")
+    parser = argparse.ArgumentParser(description="Train the baseline GNN on GRaM samples.")
+    parser.add_argument("--config", type=str, default="configs/gram/phase_a.yaml")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--train-limit", type=int, default=None)
     parser.add_argument("--val-limit", type=int, default=None)
@@ -76,15 +76,13 @@ def _resolve_device(requested_device: str | None) -> torch.device:
     raise ValueError(f"Unsupported device option: {requested_device!r}")
 
 
-def _sample_metrics(pred_velocity: torch.Tensor, true_velocity: torch.Tensor) -> dict[str, float | torch.Tensor]:
+def _sample_metrics(pred_velocity: torch.Tensor, true_velocity: torch.Tensor) -> dict[str, float]:
     diff = pred_velocity - true_velocity
     mae = torch.mean(torch.abs(diff)).item()
     rmse = torch.sqrt(torch.mean(diff**2)).item()
-    horizon_mae = torch.mean(torch.abs(diff), dim=(0, 2))
     return {
         "velocity_mae": float(mae),
         "velocity_rmse": float(rmse),
-        "horizon_mae": horizon_mae.detach(),
     }
 
 
@@ -139,27 +137,31 @@ def _build_subgraph_batch(
         relabel_nodes=True,
     )
 
-    return {
+    batch: dict[str, Any] = {
         "x": graph.x[subset].to(device),
         "pos": graph.pos[subset].to(device),
         "edge_index": edge_index.to(device),
         "target_velocity": graph.y_velocity[subset].to(device),
-        "airfoil_mask": graph.airfoil_mask[subset].to(device),
         "seed_mapping": mapping.to(device=device, dtype=torch.long),
     }
+    batch["target_pressure"] = (
+        graph.y_pressure[subset].to(device) if hasattr(graph, "y_pressure") else None
+    )
+    return batch
 
 
 def _iterate_epoch(
-    model: FVMNeuralOperator,
+    model: BaselineGNN,
     dataset: GRAMGraphDataset,
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
     limit: int | None,
-    criterion: FVMCompositeLoss,
+    pressure_loss_weight: float,
     seed: int,
     node_batch_size: int,
     num_hops: int,
 ) -> dict[str, float]:
+    loss_fn = nn.HuberLoss(delta=1.0)
     is_train = optimizer is not None
     model.train(is_train)
 
@@ -171,11 +173,9 @@ def _iterate_epoch(
 
     total_loss = 0.0
     total_velocity_loss = 0.0
-    total_boundary_loss = 0.0
-    total_flux_loss = 0.0
+    total_pressure_loss = 0.0
     total_velocity_mae = 0.0
     total_velocity_rmse = 0.0
-    total_horizon_mae = None
     num_target_nodes = 0
     num_node_batches = 0
 
@@ -193,24 +193,19 @@ def _iterate_epoch(
             batch = _build_subgraph_batch(graph, target_nodes, num_hops=num_hops, device=device)
 
             with torch.set_grad_enabled(is_train):
-                outputs = model(
-                    batch["x"],
-                    pos=batch["pos"],
-                    edge_index=batch["edge_index"],
-                    airfoil_mask=batch["airfoil_mask"],
-                )
+                outputs = model(batch["x"], pos=batch["pos"], edge_index=batch["edge_index"])
                 seed_mapping = batch["seed_mapping"]
                 pred_velocity = outputs["velocity"][seed_mapping]
                 true_velocity = batch["target_velocity"][seed_mapping]
-                losses = criterion(
-                    {
-                        "velocity": pred_velocity,
-                        "aux_losses": outputs.get("aux_losses", {}),
-                    },
-                    true_velocity=true_velocity,
-                    airfoil_mask=batch["airfoil_mask"][seed_mapping],
-                )
-                loss = losses["loss"]
+                velocity_loss = loss_fn(pred_velocity, true_velocity)
+                loss = velocity_loss
+                pressure_loss_value = torch.tensor(0.0, device=device)
+
+                if batch["target_pressure"] is not None and "pressure" in outputs:
+                    pred_pressure = outputs["pressure"][seed_mapping]
+                    true_pressure = batch["target_pressure"][seed_mapping]
+                    pressure_loss_value = loss_fn(pred_pressure, true_pressure)
+                    loss = loss + pressure_loss_weight * pressure_loss_value
 
                 if is_train:
                     optimizer.zero_grad(set_to_none=True)
@@ -220,49 +215,37 @@ def _iterate_epoch(
 
             metrics = _sample_metrics(pred_velocity.detach(), true_velocity.detach())
             batch_nodes = int(seed_mapping.numel())
-            total_loss += float(losses["loss"].item()) * batch_nodes
-            total_velocity_loss += float(losses["velocity_loss"].item()) * batch_nodes
-            total_boundary_loss += float(losses["boundary_loss"].item()) * batch_nodes
-            total_flux_loss += float(losses["flux_loss"].item()) * batch_nodes
-            total_velocity_mae += float(metrics["velocity_mae"]) * batch_nodes
-            total_velocity_rmse += float(metrics["velocity_rmse"]) * batch_nodes
-
-            horizon_mae = metrics["horizon_mae"]
-            if total_horizon_mae is None:
-                total_horizon_mae = torch.zeros_like(horizon_mae)
-            total_horizon_mae += horizon_mae.cpu() * batch_nodes
-
+            total_loss += float(loss.item()) * batch_nodes
+            total_velocity_loss += float(velocity_loss.item()) * batch_nodes
+            total_pressure_loss += float(pressure_loss_value.item()) * batch_nodes
+            total_velocity_mae += metrics["velocity_mae"] * batch_nodes
+            total_velocity_rmse += metrics["velocity_rmse"] * batch_nodes
             num_target_nodes += batch_nodes
             num_node_batches += 1
 
     if num_target_nodes == 0:
         raise ValueError("No target nodes were processed in the epoch.")
 
-    result = {
+    return {
         "loss": total_loss / num_target_nodes,
         "velocity_loss": total_velocity_loss / num_target_nodes,
-        "boundary_loss": total_boundary_loss / num_target_nodes,
-        "flux_loss": total_flux_loss / num_target_nodes,
+        "pressure_loss": total_pressure_loss / num_target_nodes,
         "velocity_mae": total_velocity_mae / num_target_nodes,
         "velocity_rmse": total_velocity_rmse / num_target_nodes,
         "num_samples": float(num_target_nodes),
         "num_node_batches": float(num_node_batches),
     }
-    if total_horizon_mae is not None:
-        avg_horizon_mae = total_horizon_mae / num_target_nodes
-        for idx, value in enumerate(avg_horizon_mae.tolist(), start=1):
-            result[f"velocity_mae_h{idx}"] = float(value)
-    return result
 
 
 def _predict_graph(
-    model: FVMNeuralOperator,
+    model: BaselineGNN,
     graph: Data,
     device: torch.device,
     num_hops: int,
     eval_node_batch_size: int,
 ) -> dict[str, torch.Tensor]:
     pred_velocity = torch.empty_like(graph.y_velocity, device="cpu")
+    pred_pressure = torch.empty_like(graph.y_pressure, device="cpu") if hasattr(graph, "y_pressure") else None
 
     model.eval()
     with torch.no_grad():
@@ -273,20 +256,20 @@ def _predict_graph(
             shuffle=False,
         ):
             batch = _build_subgraph_batch(graph, target_nodes, num_hops=num_hops, device=device)
-            outputs = model(
-                batch["x"],
-                pos=batch["pos"],
-                edge_index=batch["edge_index"],
-                airfoil_mask=batch["airfoil_mask"],
-            )
+            outputs = model(batch["x"], pos=batch["pos"], edge_index=batch["edge_index"])
             seed_mapping = batch["seed_mapping"]
             pred_velocity[target_nodes] = outputs["velocity"][seed_mapping].detach().cpu()
+            if pred_pressure is not None and "pressure" in outputs:
+                pred_pressure[target_nodes] = outputs["pressure"][seed_mapping].detach().cpu()
 
-    return {"velocity": pred_velocity}
+    result: dict[str, torch.Tensor] = {"velocity": pred_velocity}
+    if pred_pressure is not None:
+        result["pressure"] = pred_pressure
+    return result
 
 
 def _save_example_prediction(
-    model: FVMNeuralOperator,
+    model: BaselineGNN,
     dataset: GRAMGraphDataset,
     output_path: Path,
     device: torch.device,
@@ -311,6 +294,11 @@ def _save_example_prediction(
         "pos": graph.pos.cpu().numpy(),
         "airfoil_mask": graph.airfoil_mask.cpu().numpy(),
     }
+    if hasattr(graph, "y_pressure"):
+        payload["actual_pressure"] = graph.y_pressure.transpose(0, 1).cpu().numpy()
+    if "pressure" in outputs:
+        payload["pred_pressure"] = outputs["pressure"].transpose(0, 1).numpy()
+
     np.savez_compressed(output_path, **payload)
 
 
@@ -318,7 +306,7 @@ def main() -> None:
     args = _build_argparser().parse_args()
     config_path = Path(args.config)
     config = yaml.safe_load(config_path.read_text())
-    train_cfg = config.get("fvm_operator", {})
+    train_cfg = config.get("baseline_gnn", {})
 
     seed = int(config["split"]["seed"])
     random.seed(seed)
@@ -365,28 +353,31 @@ def main() -> None:
         args.eval_node_batch_size or train_cfg.get("eval_node_batch_size", max(node_batch_size, 4096))
     )
     graph_cache_dir = args.graph_cache_dir or train_cfg.get(
-        "graph_cache_dir", "outputs/fvm_operator/graph_cache"
+        "graph_cache_dir", "outputs/baseline_gnn/graph_cache"
     )
-    undirected_graph = bool(train_cfg.get("undirected_graph", True))
+    undirected_graph = bool(train_cfg.get("undirected_graph", False))
 
     print(
         json.dumps(
             {
-                "status": "initializing_fvm_operator",
+                "status": "initializing_baseline_gnn",
                 "device": str(device),
                 "subsample_points": subsample_points if subsample_points is not None else "all",
                 "train_records": len(split["train_records"]),
                 "val_records": len(split["val_records"]),
                 "node_batch_size": node_batch_size,
                 "num_hops": num_hops,
-                "k_neighbors": k_neighbors,
             }
         ),
         flush=True,
     )
-    if device.type == "cpu" and subsample_points is not None and subsample_points > 8192:
+    if device.type == "mps":
+        print("Using Apple Silicon GPU via PyTorch MPS.", flush=True)
+        if subsample_points is None or subsample_points > 8192:
+            print("Large point clouds on MPS will build k-NN on CPU first to avoid GPU memory spikes.", flush=True)
+    if device.type == "cpu" and subsample_points is not None and subsample_points > 4096:
         print(
-            f"Warning: subsample_points={subsample_points} on CPU can be slow; consider 4096-8192 for initial runs.",
+            f"Warning: subsample_points={subsample_points} on CPU can be slow; consider 2048-4096 for smoke runs.",
             flush=True,
         )
 
@@ -410,24 +401,15 @@ def main() -> None:
     )
 
     sample_input_dim = int(train_dataset[0].x.shape[-1])
-    model = FVMNeuralOperator(
+    model = BaselineGNN(
         in_dim=sample_input_dim,
         hidden_dim=int(train_cfg.get("hidden_dim", 64)),
         num_layers=num_layers,
         k_neighbors=k_neighbors,
         output_steps=int(train_cfg.get("output_steps", 5)),
+        predict_pressure=bool(train_cfg.get("predict_pressure", True)),
         dropout=float(train_cfg.get("dropout", 0.1)),
-        edge_hidden_dim=int(train_cfg.get("edge_hidden_dim", train_cfg.get("hidden_dim", 64))),
     ).to(device)
-
-    criterion = FVMCompositeLoss(
-        output_steps=int(train_cfg.get("output_steps", 5)),
-        delta=float(train_cfg.get("loss_delta", 1.0)),
-        boundary_weight=float(train_cfg.get("boundary_loss_weight", 0.1)),
-        flux_weight=float(train_cfg.get("flux_loss_weight", 0.02)),
-        late_horizon_bonus=float(train_cfg.get("late_horizon_bonus", 0.4)),
-        loss_type=str(train_cfg.get("loss_type", "huber")),
-    )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -438,8 +420,9 @@ def main() -> None:
     epochs = int(args.epochs or train_cfg.get("epochs", 5))
     train_limit = args.train_limit if args.train_limit is not None else train_cfg.get("train_limit")
     val_limit = args.val_limit if args.val_limit is not None else train_cfg.get("val_limit")
+    pressure_loss_weight = float(train_cfg.get("pressure_loss_weight", 0.05))
 
-    output_dir = Path(args.output_dir or train_cfg.get("output_dir", "outputs/fvm_operator"))
+    output_dir = Path(args.output_dir or train_cfg.get("output_dir", "outputs/baseline_gnn"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     history: list[dict[str, Any]] = []
@@ -454,7 +437,7 @@ def main() -> None:
             optimizer=optimizer,
             device=device,
             limit=int(train_limit) if train_limit is not None else None,
-            criterion=criterion,
+            pressure_loss_weight=pressure_loss_weight,
             seed=seed + epoch,
             node_batch_size=node_batch_size,
             num_hops=num_hops,
@@ -465,7 +448,7 @@ def main() -> None:
             optimizer=None,
             device=device,
             limit=int(val_limit) if val_limit is not None else None,
-            criterion=criterion,
+            pressure_loss_weight=pressure_loss_weight,
             seed=seed,
             node_batch_size=eval_node_batch_size,
             num_hops=num_hops,
@@ -475,19 +458,13 @@ def main() -> None:
             "epoch": epoch,
             "train_loss": train_metrics["loss"],
             "train_velocity_loss": train_metrics["velocity_loss"],
-            "train_boundary_loss": train_metrics["boundary_loss"],
-            "train_flux_loss": train_metrics["flux_loss"],
+            "train_pressure_loss": train_metrics["pressure_loss"],
             "val_loss": val_metrics["loss"],
             "val_velocity_loss": val_metrics["velocity_loss"],
-            "val_boundary_loss": val_metrics["boundary_loss"],
-            "val_flux_loss": val_metrics["flux_loss"],
+            "val_pressure_loss": val_metrics["pressure_loss"],
             "val_velocity_mae": val_metrics["velocity_mae"],
             "val_velocity_rmse": val_metrics["velocity_rmse"],
         }
-        for idx in range(1, int(train_cfg.get("output_steps", 5)) + 1):
-            key = f"velocity_mae_h{idx}"
-            if key in val_metrics:
-                record[f"val_{key}"] = val_metrics[key]
         history.append(record)
         print(json.dumps(record), flush=True)
 
@@ -500,10 +477,10 @@ def main() -> None:
                     "model_config": {
                         "in_dim": int(sample_input_dim),
                         "hidden_dim": int(train_cfg.get("hidden_dim", 64)),
-                        "edge_hidden_dim": int(train_cfg.get("edge_hidden_dim", train_cfg.get("hidden_dim", 64))),
                         "num_layers": num_layers,
                         "k_neighbors": k_neighbors,
                         "output_steps": int(train_cfg.get("output_steps", 5)),
+                        "predict_pressure": bool(train_cfg.get("predict_pressure", True)),
                         "dropout": float(train_cfg.get("dropout", 0.1)),
                     },
                     "best_epoch": best_epoch,
