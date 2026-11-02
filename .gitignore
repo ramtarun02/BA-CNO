@@ -29,6 +29,6 @@ warped-ifw/
 token.txt
 
 # Benchmark data (download with scripts/*/download.sh)
-data/
+/data/
 *.tfrecord
 *.egg-info/
