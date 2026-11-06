@@ -14,6 +14,8 @@ Protocol (kept identical to Pfaff et al. 2021 so RMSE is comparable):
 from __future__ import annotations
 
 import random
+import struct
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,13 +109,42 @@ def build_mesh(pos: np.ndarray, node_type: np.ndarray, cells: np.ndarray) -> Cyl
     )
 
 
+def mmap_npz(path: str | Path, key: str) -> np.ndarray:
+    """Memory-map one array of an uncompressed ``.npz`` (as written by ``np.savez``).
+
+    Reads only the headers; pages are loaded on access, so a cached trajectory
+    costs almost no RAM. Copy-on-write, so torch gets a writable buffer.
+    """
+
+    with zipfile.ZipFile(path) as zf:
+        info = zf.getinfo(f"{key}.npy")
+        if info.compress_type != zipfile.ZIP_STORED:
+            raise ValueError(f"{path}:{key} is compressed; cannot memory-map")
+    with open(path, "rb") as fh:
+        fh.seek(info.header_offset)
+        local = fh.read(30)
+        name_len, extra_len = struct.unpack("<HH", local[26:30])
+        fh.seek(info.header_offset + 30 + name_len + extra_len)
+        version = np.lib.format.read_magic(fh)
+        read_header = np.lib.format.read_array_header_1_0 if version == (1, 0) else np.lib.format.read_array_header_2_0
+        shape, fortran, dtype = read_header(fh)
+        offset = fh.tell()
+    return np.memmap(path, dtype=dtype, mode="c", shape=shape, offset=offset, order="F" if fortran else "C")
+
+
 class CylinderTrajectory:
-    def __init__(self, path: str | Path) -> None:
+    """One trajectory. ``mmap=True`` leaves velocity/pressure on disk until indexed."""
+
+    def __init__(self, path: str | Path, mmap: bool = False) -> None:
         data = np.load(path)
         self.path = Path(path)
         self.dt = float(data["dt"]) if "dt" in data else 0.01
-        self.velocity = torch.as_tensor(data["velocity"], dtype=torch.float32)  # (T, N, 2)
-        self.pressure = torch.as_tensor(data["pressure"], dtype=torch.float32).view(self.velocity.shape[0], -1)
+        if mmap:
+            velocity, pressure = mmap_npz(path, "velocity"), mmap_npz(path, "pressure")
+        else:
+            velocity, pressure = data["velocity"], data["pressure"]
+        self.velocity = torch.from_numpy(velocity) if mmap else torch.as_tensor(velocity, dtype=torch.float32)  # (T, N, 2)
+        self.pressure = (torch.from_numpy(pressure) if mmap else torch.as_tensor(pressure, dtype=torch.float32)).view(self.velocity.shape[0], -1)
         self.mesh = build_mesh(data["mesh_pos"], data["node_type"], data["cells"])
 
     @property
@@ -122,10 +153,29 @@ class CylinderTrajectory:
 
     @property
     def inflow_speed(self) -> float:
-        """Mean inflow speed (reference velocity for Strouhal / Reynolds)."""
+        """Bulk inflow speed U_mean = (1/H) * integral u dy (reference velocity for Strouhal / Reynolds).
 
-        inflow = self.mesh.node_type == NodeType.INFLOW
-        return float(self.velocity[0, inflow, 0].mean())
+        Integrated with the trapezoid rule, with no-slip zeros at the channel walls.
+        A plain node average is ~30% low because the inflow nodes cluster near the walls.
+        """
+
+        mesh = self.mesh
+        inflow = (mesh.node_type == NodeType.INFLOW).nonzero().view(-1)
+        y = mesh.pos[inflow, 1].double()
+        order = torch.argsort(y)
+        y, u = y[order], self.velocity[0, inflow[order], 0].double()
+        y_lo, y_hi = float(mesh.pos[:, 1].min()), float(mesh.pos[:, 1].max())
+        zero = u.new_zeros(1)
+        y = torch.cat([y.new_tensor([y_lo]), y, y.new_tensor([y_hi])])
+        u = torch.cat([zero, u, zero])
+        return float(torch.trapz(u, y) / (y_hi - y_lo))
+
+
+def wake_probe_index(mesh: CylinderMesh, diameters_downstream: float = 2.0) -> int:
+    """Mesh node nearest the wake centreline, ``diameters_downstream`` D behind the cylinder centre."""
+
+    target = mesh.centre + torch.tensor([diameters_downstream * mesh.diameter, 0.0])
+    return int(torch.argmin(torch.linalg.norm(mesh.pos - target, dim=-1)))
 
 
 def node_inputs(velocity: torch.Tensor, mesh: CylinderMesh) -> torch.Tensor:
@@ -142,6 +192,7 @@ class CylinderFlowDataset(Dataset):
         max_trajectories: int | None = None,
         noise_std: float = 0.02,
         cache: bool = True,
+        mmap: bool = True,
     ) -> None:
         self.files = sorted((Path(root) / split).glob("traj_*.npz"))
         if max_trajectories is not None:
@@ -151,13 +202,14 @@ class CylinderFlowDataset(Dataset):
         self.noise_std = float(noise_std)
         self._cache: dict[int, CylinderTrajectory] = {}
         self.use_cache = cache
+        self.mmap = mmap
         first = self.trajectory(0)
         self.steps_per_traj = first.num_steps - 1
 
     def trajectory(self, idx: int) -> CylinderTrajectory:
         if idx in self._cache:
             return self._cache[idx]
-        traj = CylinderTrajectory(self.files[idx])
+        traj = CylinderTrajectory(self.files[idx], mmap=self.mmap)
         if self.use_cache:
             self._cache[idx] = traj
         return traj

@@ -85,3 +85,34 @@ The step budget is fixed on Day 2 from a measured it/s on the Colab GPU (default
 - **Flux decoder slower or less stable:** watch the loss scale; target normalisation is scale-only for this decoder (centring would add a fake source).
 - **AirfRANS memory (~180k points per sim):** subsample as the AirfRANS paper does, or use a coarser graph.
 - **Over-claiming:** every physics number is reported next to its CFD value. No "physics-informed" language beyond what the tests prove.
+
+## 10. Progress log
+
+### Day 1 (2026-11-02): data, tests, Strouhal check
+
+- **Data:** valid (100) and test (100) downloaded and converted. Train uses the first 50 trajectories, fetched as a byte range (`download.sh ... train:50`). The reader skips the truncated last record.
+- **Tests:** `pytest` 7/7 pass, including new tests for partial-download truncation and memory-mapped loading.
+- **Bug fixed, bulk inflow speed:** `CylinderTrajectory.inflow_speed` averaged the inflow nodes. Those cluster near the walls, so the result was ~30% below the true bulk velocity (1.02 vs 1.47 on test/0). It now integrates the parabolic profile (trapezoid rule, no-slip ends). Absolute St and Re were previously inflated by ~45%; model-vs-truth St ratios were unaffected.
+- **Domain:** 1.6 × 0.41 channel (height matches Schäfer–Turek, length is 1.6 not 2.2). D/H ranges ~0.10–0.39. With ν = 1e-3 assumed, Re ranges 14–211. 190/200 trajectories shed.
+- **Strouhal check** (`scripts/cylinder/strouhal_check.py`, output `outputs/cylinder/strouhal_check/`):
+  - *Estimator: PASS.* FFT peak vs zero-crossing count on the developed half: median relative difference 0.18%, p90 1.3%.
+  - *Against Schäfer–Turek: MISMATCH.* The 5 trajectories with Re 80–120 and D/H 0.22–0.27 give St = 0.242–0.261 (median 0.245), against the 0.295–0.305 band. Across all D/H, St rises with blockage, and the high-blockage trajectories (D/H > 0.3) do reach 0.30–0.35. A first wider window without a blockage filter looked like a pass (median 0.290), but only because of that blockage effect.
+  - *Open question:* the most likely cause is that ν ≠ 1e-3, so the Re labels are off; the shorter channel and off-centre cylinders are secondary candidates. ν could not be recovered from the upstream pressure gradient (the sign is inconsistent with Poiseuille near the inlet). **Consequence:** St is used only as a *relative* metric (prediction vs ground truth on the same trajectory). That comparison is valid whatever ν is. No absolute St–Re claim is made against Schäfer–Turek.
+
+### Day 2 (2026-11-02): smoke runs, Colab, timing
+
+- **Memory, Colab:** the full train split is 13.6 GB of float32, more than free-Colab RAM. Trajectories are now memory-mapped from the uncompressed `.npz` (`mmap_npz`), so only the meshes stay in RAM.
+- **Memory, Mac:** with `batch_size=2`, MPS OOMs after ~500 steps. MPS keeps one compiled graph per batch shape, and mixed-mesh batches give O(trajectories²) shapes; driver memory grew ~40 MB/step and `empty_cache()` doesn't help. Mac smoke runs therefore use `batch_size=1` and 20 trajectories. CUDA runs keep `batch_size=2`. `train.py` warns about this.
+- **Smoke runs** (600 steps, MPS, bs=1): all 5 configs train, save, and evaluate end to end (`outputs/smoke/`). The loss falls for each. The rollout metrics at 600 steps carry no information.
+
+| config | params | Mac it/s (bs=1) |
+|---|---|---|
+| mgn | 2,333,059 | 4.11 |
+| ba_cno_soft | 2,457,874 | 2.58 |
+| ba_cno_hard | 2,457,874 | 3.09 |
+| ba_cno_none_fluxdec | 2,556,948 | 3.88 |
+| ba_cno_hard_fluxdec | 2,556,948 | 2.99 |
+
+  Parameter overhead vs MGN: +5.3% (face weights), +9.6% (flux decoder). `ba_cno_soft` is the slowest, because of the antisymmetry penalty pass.
+- **Colab:** `notebooks/03_cylinder_colab.ipynb` covers setup, the timing cell, and resumable training and evaluation with checkpoints on Drive. `scripts/cylinder/budget.py` sets the budget so that the slowest config fits the hours available.
+- **Budget: NOT YET LOCKED.** It must come from the Colab GPU timing cell, not from Mac numbers. For reference, the Mac numbers give 175k steps at 20 h per config.

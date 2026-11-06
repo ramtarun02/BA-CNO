@@ -120,6 +120,10 @@ def main() -> None:
     p_w = float(tr.get("pressure_loss_weight", 0.0))
     n_params = sum(p.numel() for p in model.parameters())
     print(f"device={device} params={n_params:,} steps={max_steps}")
+    if device.type == "mps" and tr.get("batch_size", 2) > 1:
+        # MPS compiles and keeps one graph per input shape; batches of mixed meshes give
+        # O(trajectories^2) shapes and the driver memory grows until OOM. Use batch_size=1 on a Mac.
+        print("warning: batch_size > 1 on MPS leaks memory with mixed mesh sizes; use train.batch_size=1")
 
     def save(path: Path) -> None:
         torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
@@ -128,6 +132,8 @@ def main() -> None:
 
     model.train()
     t0 = time.time()
+    start_step = step
+    t_half, half_step = None, start_step + (max_steps - start_step) // 2
     running = 0.0
     for batch in loader:
         if step >= max_steps:
@@ -152,6 +158,8 @@ def main() -> None:
         sched.step()
         step += 1
         running += loss.item()
+        if step == half_step:
+            t_half = time.time()
 
         if step % tr.get("log_every", 100) == 0:
             rec = {"step": step, "loss": running / tr.get("log_every", 100), "lr": sched.get_last_lr()[0],
@@ -165,6 +173,14 @@ def main() -> None:
     save(last)
     save(out_dir / "final.pt")
     (out_dir / "history.json").write_text(json.dumps(history, indent=1))
+    # steady-state throughput over the second half of this session (excludes warm-up and data caching)
+    t_end = time.time()
+    if t_half is not None and step > half_step:
+        timing = {"device": str(device), "params": n_params, "batch_size": tr.get("batch_size", 2),
+                  "steps": step - start_step, "seconds": round(t_end - t0, 1),
+                  "it_per_s": round((step - half_step) / (t_end - t_half), 3)}
+        (out_dir / "timing.json").write_text(json.dumps(timing, indent=1))
+        print(json.dumps(timing))
     print(f"done: {step} steps in {time.time() - t0:.0f}s -> {out_dir}")
 
 

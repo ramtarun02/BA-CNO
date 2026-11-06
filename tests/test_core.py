@@ -17,7 +17,7 @@ import struct
 import numpy as np
 import torch
 
-from ba_cno.data.cylinder import build_mesh, collate_graphs
+from ba_cno.data.cylinder import CylinderTrajectory, build_mesh, collate_graphs
 from ba_cno.data.tfrecord import decode_trajectory, iter_tfrecord, parse_example
 from ba_cno.graph import scatter_sum
 from ba_cno.metrics import physics as P
@@ -136,9 +136,22 @@ def test_tfrecord_roundtrip(tmp_path):
     path.write_bytes(record * 2)
     payloads = list(iter_tfrecord(path))
     assert len(payloads) == 2
+    path.write_bytes(record * 2 + record[: len(record) // 2])  # partial download
+    assert len(list(iter_tfrecord(path))) == 2
     traj = decode_trajectory(parse_example(payloads[0]), meta)
     assert np.array_equal(traj["velocity"], vel)
     assert np.array_equal(traj["cells"], cells[0])
+
+
+def test_mmap_trajectory_matches_eager(tmp_path):
+    pos, node_type, cells = grid_mesh(5)
+    vel = np.random.rand(3, len(pos), 2).astype(np.float32)
+    pres = np.random.rand(3, len(pos), 1).astype(np.float32)
+    path = tmp_path / "traj_0000.npz"
+    np.savez(path, dt=np.float32(0.01), mesh_pos=pos, node_type=node_type[:, None], cells=cells, velocity=vel, pressure=pres)
+    eager, lazy = CylinderTrajectory(path), CylinderTrajectory(path, mmap=True)
+    assert torch.equal(eager.velocity, lazy.velocity)
+    assert torch.equal(eager.pressure, lazy.pressure)
 
 
 def test_every_model_trains_one_step():

@@ -29,7 +29,7 @@ ba_cno/
     cylinder.py            CylinderFlow adapter
     gram/                  GRaM challenge data pipeline (legacy)
   rollout.py, normalization.py
-scripts/cylinder/          download.sh, convert.py, train.py, evaluate.py
+scripts/cylinder/          download.sh, convert.py, strouhal_check.py, train.py, budget.py, evaluate.py
 scripts/gram/              original challenge training scripts
 configs/cylinder/          the ablation ladder (mgn, ba_cno_soft, ba_cno_hard, ba_cno_none_fluxdec, ba_cno_hard_fluxdec)
 tests/test_core.py         conservation, antisymmetry, gradient and parser tests
@@ -41,16 +41,21 @@ tests/test_core.py         conservation, antisymmetry, gradient and parser tests
 pip install -e ".[dev]"
 python -m pytest tests -q
 
-bash scripts/cylinder/download.sh data/cylinder_flow/raw valid test   # add 'train' on Colab
+# 'train:50' fetches only the first ~50 train trajectories (~750 MB of 13.6 GB); use 'train' on Colab
+bash scripts/cylinder/download.sh data/cylinder_flow/raw valid test train:50
 python scripts/cylinder/convert.py --raw data/cylinder_flow/raw --out data/cylinder_flow --splits valid test
+python scripts/cylinder/convert.py --raw data/cylinder_flow/raw --out data/cylinder_flow --splits train --max 50
 
-# Mac smoke run (uses 'valid' as a small training set)
+# Ground-truth Strouhal sanity check (Day 1)
+python scripts/cylinder/strouhal_check.py --split valid test
+
+# Mac smoke run. batch_size=1: MPS keeps one compiled graph per batch shape, so mixed-mesh batches leak memory
 python scripts/cylinder/train.py --config configs/cylinder/ba_cno_hard_fluxdec.yaml \
-  --override train.max_steps=500 data.max_trajectories=5 output_dir=outputs/smoke/hard_fluxdec
-python scripts/cylinder/evaluate.py --run outputs/smoke/hard_fluxdec --max-trajectories 3
+  --override train.max_steps=600 train.batch_size=1 data.max_trajectories=20 output_dir=outputs/smoke/ba_cno_hard_fluxdec
+python scripts/cylinder/evaluate.py --run outputs/smoke/ba_cno_hard_fluxdec --max-trajectories 2
 ```
 
-Training resumes automatically from `<output_dir>/last.pt`, which is useful on Colab and Kaggle.
+Training resumes automatically from `<output_dir>/last.pt`, which is useful on Colab and Kaggle. GPU runs (timing, step budget, training, evaluation) go through [`notebooks/03_cylinder_colab.ipynb`](notebooks/03_cylinder_colab.ipynb); `scripts/cylinder/budget.py` turns the measured it/s into one step budget for all configs.
 
 ## References
 

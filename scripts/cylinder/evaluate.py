@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ba_cno.data.cylinder import CylinderTrajectory
+from ba_cno.data.cylinder import CylinderTrajectory, wake_probe_index
 from ba_cno.metrics import physics as P
 from ba_cno.models import build_model
 from ba_cno.normalization import Normalizer
@@ -40,12 +40,6 @@ def load_run(run_dir: Path, device, which: str = "final.pt"):
     model = build_model(cfg["model"]["name"], node_in, edge_in, 3, **m).to(device)
     model.load_state_dict(ckpt["model"])
     return model, norms, cfg
-
-
-def wake_probe_index(traj: CylinderTrajectory, diameters_downstream: float = 2.0) -> int:
-    mesh = traj.mesh
-    target = mesh.centre + torch.tensor([diameters_downstream * mesh.diameter, 0.0])
-    return int(torch.argmin(torch.linalg.norm(mesh.pos - target, dim=-1)))
 
 
 def physics_summary(vel: torch.Tensor, traj: CylinderTrajectory, probe: int) -> dict:
@@ -90,7 +84,7 @@ def main() -> None:
         pred = rollout_cylinder(model, norms, traj, device=device).cpu()
         true = traj.velocity
         curve = P.rollout_rmse_curve(pred[1:], true[1:])
-        probe = wake_probe_index(traj)
+        probe = wake_probe_index(traj.mesh)
         rec = {
             "file": f.name,
             "rmse_1": float(curve[0]),

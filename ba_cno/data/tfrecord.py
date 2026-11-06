@@ -92,6 +92,8 @@ def parse_example(buf: bytes) -> dict[str, object]:
 
 
 def iter_tfrecord(path: str | Path) -> Iterator[bytes]:
+    """Yield record payloads. A truncated final record (partial download) is skipped."""
+
     with open(path, "rb") as fh:
         while True:
             header = fh.read(8)
@@ -100,6 +102,8 @@ def iter_tfrecord(path: str | Path) -> Iterator[bytes]:
             (length,) = struct.unpack("<Q", header)
             fh.read(4)  # length crc
             payload = fh.read(length)
+            if len(payload) < length:
+                return
             fh.read(4)  # payload crc
             yield payload
 
