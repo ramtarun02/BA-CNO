@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from .data.cylinder import CylinderTrajectory, node_inputs
+from .data.cylinder import CylinderTrajectory
 
 
 @torch.no_grad()
@@ -29,12 +29,12 @@ def rollout_cylinder(model, normalizers: dict, traj: CylinderTrajectory, num_ste
         "boundary_mask": mesh.boundary_mask.to(device),
         "interior_edge_mask": mesh.interior_edge_mask.to(device),
     }
-    onehot_mesh = mesh
+    onehot = mesh.node_type_onehot().to(device)
 
     v = gt[0].clone()
     out = [v]
     for t in range(steps):
-        batch["node_features"] = normalizers["node"](node_inputs(v, onehot_mesh).to(device))
+        batch["node_features"] = normalizers["node"](torch.cat([v, onehot], dim=-1))  # as node_inputs, on device
         pred = model(batch)["output"]
         dv = normalizers["target"].inverse(pred)[:, :2]
         v_next = torch.where(keep.unsqueeze(-1), v + dv, gt[t + 1])

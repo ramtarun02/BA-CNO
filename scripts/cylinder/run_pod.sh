@@ -15,12 +15,14 @@ set -euo pipefail
 ROOT=${ROOT:-/workspace}
 DATA=${DATA:-$ROOT/data/cylinder_flow}
 RUNS=${RUNS:-$ROOT/outputs/cylinder}
+RAW=${RAW:-$DATA/raw}  # point at a larger disk if $DATA is small: raw + converted is ~2x the split
 CONFIGS=${CONFIGS:-"mgn ba_cno_soft ba_cno_hard ba_cno_none_fluxdec ba_cno_hard_fluxdec"}
 # one CPU thread per process: N concurrent runs otherwise oversubscribe the cores
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 # RunPod images mark the system Python as externally managed (PEP 668); the pod is
 # disposable and already ships torch, so install into it rather than a venv.
 export PIP_BREAK_SYSTEM_PACKAGES=1
+export PYTHONUNBUFFERED=1  # live training logs
 
 launch() {  # launch <tag-dir> <max_steps> <log_every>
   local base=$1 steps=$2 log_every=$3
@@ -38,9 +40,9 @@ case ${1:-} in
     pip install -q -e .
     for split in valid test train; do
       if [ ! -d "$DATA/$split" ]; then
-        bash scripts/cylinder/download.sh "$DATA/raw" "$split"
-        python scripts/cylinder/convert.py --raw "$DATA/raw" --out "$DATA" --splits "$split"
-        rm -f "$DATA/raw/$split.tfrecord"
+        bash scripts/cylinder/download.sh "$RAW" "$split"
+        python scripts/cylinder/convert.py --raw "$RAW" --out "$DATA" --splits "$split"
+        rm -f "$RAW/$split.tfrecord"
       fi
     done
     echo "train trajectories: $(ls "$DATA/train" | wc -l)"
@@ -68,7 +70,8 @@ case ${1:-} in
   status)
     nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader
     for c in $CONFIGS; do
-      printf '%-22s %s\n' "$c" "$(grep -E '^\{"step"|Resumed|done:|Error' "$RUNS/$c/train.log" 2>/dev/null | tail -1)"
+      printf '%-22s %s\n' "$c" "$(grep -E '^\{"step"|Resumed|done:|Error' "$RUNS/$c/train.log" 2>/dev/null | grep -v val_ | tail -1)"
+      printf '%-22s %s\n' "" "$(grep val_ "$RUNS/$c/train.log" 2>/dev/null | tail -1)"
     done
     ;;
   *)

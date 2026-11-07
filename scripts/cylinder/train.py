@@ -19,9 +19,11 @@ import torch
 import yaml
 from torch.utils.data import DataLoader, RandomSampler
 
-from ba_cno.data.cylinder import CylinderFlowDataset, collate_graphs
+from ba_cno.data.cylinder import CylinderFlowDataset, CylinderTrajectory, collate_graphs
+from ba_cno.metrics.physics import rollout_rmse_curve
 from ba_cno.models import build_model
 from ba_cno.normalization import Normalizer
+from ba_cno.rollout import rollout_cylinder
 
 
 def pick_device(name: str) -> torch.device:
@@ -67,6 +69,26 @@ def fit_normalizers(dataset: CylinderFlowDataset, num_samples: int, center_targe
     return norm
 
 
+@torch.no_grad()
+def validate(model, normalizers: dict, samples: list[dict], trajs: list[CylinderTrajectory], device, rollout_steps: int) -> dict:
+    """One-step loss on fixed valid pairs (as the training loss, no noise) and rollout RMSE on valid trajectories."""
+
+    model.eval()
+    losses = []
+    for s in samples:
+        b = {k: v.to(device) for k, v in collate_graphs([s]).items()}
+        b["node_features"] = normalizers["node"](b["node_features"])
+        b["edge_features"] = normalizers["edge"](b["edge_features"])
+        err = (model(b)["output"] - normalizers["target"](b["target"])).pow(2)
+        losses.append(err[b["loss_mask"], :2].sum(-1).mean().item())
+    rmse = []
+    for traj in trajs:
+        pred = rollout_cylinder(model, normalizers, traj, num_steps=rollout_steps, device=device).cpu()
+        rmse.append(float(rollout_rmse_curve(pred[1:], traj.velocity[1:rollout_steps + 1])[-1]))
+    model.train()
+    return {"val_loss": sum(losses) / len(losses), f"val_rmse_{rollout_steps}": sum(rmse) / len(rmse)}
+
+
 def build(cfg: dict, node_in: int, edge_in: int):
     m = cfg["model"]
     kwargs = {k: v for k, v in m.items() if k != "name"}
@@ -102,6 +124,7 @@ def main() -> None:
 
     step = 0
     history: list[dict] = []
+    best_val = float("inf")
     last = out_dir / "last.pt"
     if last.exists():
         ckpt = torch.load(last, map_location=device)
@@ -111,11 +134,19 @@ def main() -> None:
         for k, v in ckpt["normalizers"].items():
             normalizers[k].load_state_dict(v)
         step, history = ckpt["step"], ckpt.get("history", [])
+        best_val = ckpt.get("best_val", float("inf"))
         print(f"Resumed from step {step}")
 
     sampler = RandomSampler(dataset, replacement=True, num_samples=10**9)
     loader = DataLoader(dataset, batch_size=tr.get("batch_size", 2), sampler=sampler,
                         collate_fn=collate_graphs, num_workers=tr.get("num_workers", 0))
+    val_every = int(tr.get("val_every", 0))
+    val_steps = int(tr.get("val_rollout_steps", 50))
+    if val_every:
+        val_set = CylinderFlowDataset(data["root"], "valid", noise_std=0.0)
+        g = torch.Generator().manual_seed(1234)
+        val_samples = [val_set[i] for i in torch.randint(len(val_set), (int(tr.get("val_samples", 64)),), generator=g).tolist()]
+        val_trajs = [val_set.trajectory(i) for i in range(min(int(tr.get("val_trajectories", 2)), len(val_set.files)))]
     aux_w = float(tr.get("flux_penalty_weight", 0.0))
     p_w = float(tr.get("pressure_loss_weight", 0.0))
     n_params = sum(p.numel() for p in model.parameters())
@@ -128,7 +159,7 @@ def main() -> None:
     def save(path: Path) -> None:
         torch.save({"model": model.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
                     "normalizers": {k: v.state_dict() for k, v in normalizers.items()},
-                    "step": step, "history": history, "config": cfg}, path)
+                    "step": step, "history": history, "best_val": best_val, "config": cfg}, path)
 
     model.train()
     t0 = time.time()
@@ -167,6 +198,13 @@ def main() -> None:
             history.append(rec)
             print(json.dumps(rec))
             running = 0.0
+        if val_every and step % val_every == 0:
+            rec = {"step": step, **validate(model, normalizers, val_samples, val_trajs, device, val_steps)}
+            history.append(rec)
+            print(json.dumps(rec))
+            if rec[f"val_rmse_{val_steps}"] < best_val:
+                best_val = rec[f"val_rmse_{val_steps}"]
+                save(out_dir / "best.pt")
         if step % tr.get("ckpt_every", 2000) == 0:
             save(last)
 

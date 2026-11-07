@@ -20,6 +20,7 @@ train:
   max_steps: 300000           # equal budget for every model (paper used ~10M)
   log_every: 200
   ckpt_every: 2000
+  val_every: 20000           # valid one-step loss + 50-step rollout RMSE; best.pt by the latter
   norm_samples: 200
   pressure_loss_weight: 0.0   # velocity-only, as in the MeshGraphNets code
   flux_penalty_weight: 0.0
