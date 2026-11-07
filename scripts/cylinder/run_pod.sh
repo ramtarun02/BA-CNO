@@ -18,6 +18,9 @@ RUNS=${RUNS:-$ROOT/outputs/cylinder}
 CONFIGS=${CONFIGS:-"mgn ba_cno_soft ba_cno_hard ba_cno_none_fluxdec ba_cno_hard_fluxdec"}
 # one CPU thread per process: N concurrent runs otherwise oversubscribe the cores
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
+# RunPod images mark the system Python as externally managed (PEP 668); the pod is
+# disposable and already ships torch, so install into it rather than a venv.
+export PIP_BREAK_SYSTEM_PACKAGES=1
 
 launch() {  # launch <tag-dir> <max_steps> <log_every>
   local base=$1 steps=$2 log_every=$3
