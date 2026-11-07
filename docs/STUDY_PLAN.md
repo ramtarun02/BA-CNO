@@ -116,3 +116,17 @@ The step budget is fixed on Day 2 from a measured it/s on the Colab GPU (default
   Parameter overhead vs MGN: +5.3% (face weights), +9.6% (flux decoder). `ba_cno_soft` is the slowest, because of the antisymmetry penalty pass.
 - **Colab:** `notebooks/03_cylinder_colab.ipynb` covers setup, the timing cell, and resumable training and evaluation with checkpoints on Drive. `scripts/cylinder/budget.py` sets the budget so that the slowest config fits the hours available.
 - **Budget: NOT YET LOCKED.** It must come from the Colab GPU timing cell, not from Mac numbers. For reference, the Mac numbers give 175k steps at 20 h per config.
+
+### Day 2 (cont., 2026-11-07): compute moved to RunPod, budget locked at 1M steps
+
+- **Compute:** RunPod Secure RTX 4090 ($0.89/h, pod `6xz8jq6lecbiot`, US-NC-1). Community 4090/5080 stock ran out at placement. All 5 configs train **concurrently** on the one GPU via `scripts/cylinder/run_pod.sh`. Data is on the pod's local disk; checkpoints are on `/workspace`.
+- **Timing** (5 concurrent runs, batch 2, CUDA): `mgn` 10.1, `ba_cno_none_fluxdec` 10.0, `ba_cno_hard` 9.7, `ba_cno_hard_fluxdec` 9.7, `ba_cno_soft` 4.7 it/s (26.4 alone). Aggregate ≈ 44 it/s, ~1.7× running the configs one after another.
+- **Budget locked: 1,000,000 steps per config** (1/10 of the published MGN budget; ~3.3 epochs of the 599k training pairs). Estimated 34 h wall-clock, ≈ $30. Projections were 5M ≈ 171 h / $152 and 10M ≈ 341 h / $304. 1M was chosen for the reasons below; extra budget goes to seeds (and a 300k point) rather than more steps.
+  - A longer run can't simply be continued later, because the LR schedule decays over `max_steps`.
+  - Inductive-bias gains may shrink at very long budgets.
+  - Seeds give error bars.
+- **Validation during training:** every 20k steps, one-step loss on 64 fixed valid pairs plus 50-step rollout RMSE on 2 valid trajectories. `best.pt` is selected on validation RMSE-50, never on test.
+- **Bugs found while scaling up:**
+  - `rollout_cylinder` built node features on the CPU, which crashed GPU rollouts (and would have crashed GPU evaluation).
+  - Memory-mapping 1,000 trajectories needs ~2,000 file descriptors (mmap dups each fd), against a 1,024 default; the dataset now raises the soft limit.
+  - The pod's Python is externally managed (PEP 668).
