@@ -4,6 +4,7 @@
 # run leaves the GPU mostly idle. Every config still gets the same step budget.
 #
 #   bash scripts/cylinder/run_pod.sh setup                 # download + convert to $DATA (once per volume)
+#   bash scripts/cylinder/run_pod.sh setup-lite            # valid, test + 50 train trajectories (timing only)
 #   bash scripts/cylinder/run_pod.sh timing [steps]        # concurrent timing run -> $RUNS/timing/budget.json
 #   bash scripts/cylinder/run_pod.sh train <max_steps>     # launch all configs in the background (resumes)
 #   bash scripts/cylinder/run_pod.sh status                # last log line of each run
@@ -41,6 +42,14 @@ case ${1:-} in
     done
     echo "train trajectories: $(ls "$DATA/train" | wc -l)"
     ;;
+  setup-lite)  # enough for timing: it/s does not depend on how many trajectories exist
+    pip install -q -e .
+    bash scripts/cylinder/download.sh "$DATA/raw" valid test train:50
+    python scripts/cylinder/convert.py --raw "$DATA/raw" --out "$DATA" --splits valid test
+    python scripts/cylinder/convert.py --raw "$DATA/raw" --out "$DATA" --splits train --max 50
+    rm -f "$DATA"/raw/*.tfrecord
+    echo "train trajectories: $(ls "$DATA/train" | wc -l) (lite; run 'setup' after removing $DATA/train for the full set)"
+    ;;
   timing)
     steps=${2:-2000}
     rm -rf "$RUNS/timing"
@@ -60,5 +69,5 @@ case ${1:-} in
     done
     ;;
   *)
-    sed -n '2,13p' "$0"; exit 1 ;;
+    sed -n '2,14p' "$0"; exit 1 ;;
 esac
