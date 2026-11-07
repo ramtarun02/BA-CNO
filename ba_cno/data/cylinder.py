@@ -132,6 +132,23 @@ def mmap_npz(path: str | Path, key: str) -> np.ndarray:
     return np.memmap(path, dtype=dtype, mode="c", shape=shape, offset=offset, order="F" if fortran else "C")
 
 
+def raise_open_file_limit(target: int = 65536) -> None:
+    """Lift the soft RLIMIT_NOFILE towards ``target`` (capped by the hard limit).
+
+    Python's mmap duplicates the file descriptor, so each memory-mapped
+    trajectory holds two open files; 1000 of them exceed the common 1024 default.
+    """
+
+    try:
+        import resource
+    except ImportError:  # not POSIX
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if soft != resource.RLIM_INFINITY and soft < want:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+
+
 class CylinderTrajectory:
     """One trajectory. ``mmap=True`` leaves velocity/pressure on disk until indexed."""
 
@@ -203,6 +220,8 @@ class CylinderFlowDataset(Dataset):
         self._cache: dict[int, CylinderTrajectory] = {}
         self.use_cache = cache
         self.mmap = mmap
+        if mmap and cache:
+            raise_open_file_limit()
         first = self.trajectory(0)
         self.steps_per_traj = first.num_steps - 1
 
